@@ -1,0 +1,308 @@
+<!--
+1Km Bazaar - Single-file web app (index.html)
+
+INSTRUCTIONS (replace placeholders before deploying):
+1) Create a Firebase project (Realtime Database + Storage) and set Realtime DB rules to allow read/write for testing OR configure Auth.
+2) Copy your Firebase config object into the place marked FIREBASE_CONFIG below.
+3) Deploy this file to Netlify / GitHub Pages. For Storage uploads to work you must configure security rules or use Firebase Authentication.
+4) This single-file app uses Firebase web v9 modular, Leaflet for maps, and simple client-side filtering for 1km radius.
+
+NOTE: For production you should add server-side cleanup of expired posts (older than 7 days) and secure storage rules. This file sets an `expiresAt` timestamp for each post.
+
+-->
+
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>1Km Bazaar — Buy & Sell Nearby</title>
+
+  <!-- Leaflet CSS -->
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+
+  <style>
+    :root{--accent:#0b74de;--bg:#f7f9fc;--card:#fff}
+    body{margin:0;font-family:Inter,system-ui,Arial;background:var(--bg);color:#111}
+    header{background:linear-gradient(90deg,#0b74de,#3aa0ff);color:#fff;padding:14px 16px;display:flex;align-items:center;gap:12px}
+    header h1{font-size:18px;margin:0}
+    .app{max-width:980px;margin:18px auto;padding:12px}
+    .grid{display:grid;grid-template-columns:1fr;gap:12px}
+    #map{height:320px;border-radius:8px;box-shadow:0 4px 12px rgba(0,0,0,0.08)}
+    .controls{display:flex;gap:8px;flex-wrap:wrap}
+    .btn{background:var(--accent);color:#fff;padding:8px 12px;border-radius:8px;border:none;cursor:pointer}
+    .btn.secondary{background:#eee;color:#111}
+    .card{background:var(--card);padding:12px;border-radius:8px;box-shadow:0 4px 12px rgba(0,0,0,0.04)}
+    .sell-form{display:grid;gap:8px}
+    input,select,textarea{padding:8px;border-radius:8px;border:1px solid #ddd;width:100%;box-sizing:border-box}
+    .items-list{display:grid;gap:10px}
+    .item{display:flex;gap:10px;align-items:center}
+    .item img{width:84px;height:84px;object-fit:cover;border-radius:8px}
+    .meta{flex:1}
+    .small{font-size:13px;color:#666}
+    footer{margin:20px 0;text-align:center;color:#666;font-size:13px}
+    @media(min-width:880px){.grid{grid-template-columns:1fr 360px}}
+  </style>
+</head>
+<body>
+  <header>
+    <svg width="36"height="36"viewBox="0 0 24 24"fill="none"xmlns="http://www.w3.org/2000/svg"><rect width="24"height="24"rx="6"fill="#fff"opacity="0.08"/><path d="M12 3v10l3 3" stroke="#fff"stroke-width="1.5"stroke-linecap="round"stroke-linejoin="round"/></svg>
+    <h1>1Km Bazaar — Buy & Sell Around You</h1>
+  </header>
+
+  <div class="app">
+    <div class="grid">
+      <div class="card">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">
+          <div>
+            <strong>Buy Nearby</strong>
+            <div class="small">Items within 1 km of your current location</div>
+          </div>
+          <div class="controls">
+            <button id="locBtn" class="btn secondary">Allow Location</button>
+            <button id="refreshBtn" class="btn">Refresh</button>
+            <select id="categoryFilter"><option value="all">All Categories</option><option>Electronics</option><option>Clothes</option><option>Furniture</option><option>Other</option></select>
+          </div>
+        </div>
+
+        <div id="map"></div>
+
+        <div style="margin-top:10px">
+          <div class="card small" id="status">Location not set. Click "Allow Location" to show nearby items.</div>
+        </div>
+
+        <h3 style="margin:12px 0 6px">Nearby Items</h3>
+        <div class="items-list" id="itemsList"></div>
+      </div>
+
+      <aside class="card">
+        <strong>Sell Item</strong>
+        <div class="small">Post an item to sell; it will be visible to users within 1 km.</div>
+        <form id="sellForm" class="sell-form" style="margin-top:10px">
+          <input id="sellerName" placeholder="Your name (optional)" />
+          <input id="contact" placeholder="Phone number (for WhatsApp)" />
+          <input id="title" placeholder="Item title (e.g., iPhone 11)" required />
+          <textarea id="description" placeholder="Short description" rows="3"></textarea>
+          <input id="price" placeholder="Price (INR)" />
+          <select id="category"><option>Electronics</option><option>Clothes</option><option>Furniture</option><option>Other</option></select>
+          <input id="photo" type="file" accept="image/*" />
+          <div style="display:flex;gap:8px">
+            <button type="submit" class="btn">Post Item</button>
+            <button type="button" id="myPostsBtn" class="btn secondary">My Posts</button>
+          </div>
+        </form>
+
+        <hr />
+        <div class="small">Notes:</div>
+        <ul class="small">
+          <li>Posts expire after 7 days (auto). For production, enable server cleanup.</li>
+          <li>Image uploads require Firebase Storage rules to be configured.</li>
+        </ul>
+      </aside>
+    </div>
+
+    <footer>Made with ❤️ — 1Km Bazaar (demo). Replace Firebase config before using.</footer>
+  </div>
+
+  <!-- Firebase SDKs (modular) -->
+  <script type="module">
+    // ---------- FIREBASE CONFIG: REPLACE BELOW WITH YOUR PROJECT CONFIG ----------
+    const FIREBASE_CONFIG = {
+      apiKey: "YOUR_API_KEY",
+      authDomain: "YOUR_AUTH_DOMAIN",
+      databaseURL: "YOUR_DATABASE_URL",
+      projectId: "YOUR_PROJECT_ID",
+      storageBucket: "YOUR_STORAGE_BUCKET",
+      messagingSenderId: "YOUR_SENDER_ID",
+      appId: "YOUR_APP_ID"
+    };
+    // ---------------------------------------------------------------------------
+
+    // Imports (JS modules from CDN)
+    import { initializeApp } from 'https://www.gstatic.com/firebasejs/9.23.0/firebase-app.js';
+    import { getDatabase, ref as dbRef, push, onValue, set, remove } from 'https://www.gstatic.com/firebasejs/9.23.0/firebase-database.js';
+    import { getStorage, ref as storageRef, uploadBytes, getDownloadURL, deleteObject } from 'https://www.gstatic.com/firebasejs/9.23.0/firebase-storage.js';
+
+    // Initialize Firebase
+    const app = initializeApp(FIREBASE_CONFIG);
+    const db = getDatabase(app);
+    const storage = getStorage(app);
+
+    // Simple helpers
+    function haversine(lat1, lon1, lat2, lon2){
+      const toRad = v => v * Math.PI/180;
+      const R = 6371; // km
+      const dLat = toRad(lat2-lat1);
+      const dLon = toRad(lon2-lon1);
+      const a = Math.sin(dLat/2)*Math.sin(dLat/2)+Math.cos(toRad(lat1))*Math.cos(toRad(lat2))*Math.sin(dLon/2)*Math.sin(dLon/2);
+      const c = 2*Math.atan2(Math.sqrt(a),Math.sqrt(1-a));
+      return R*c;
+    }
+
+    // DOM
+    const locBtn = document.getElementById('locBtn');
+    const refreshBtn = document.getElementById('refreshBtn');
+    const status = document.getElementById('status');
+    const itemsList = document.getElementById('itemsList');
+    const sellForm = document.getElementById('sellForm');
+    const categoryFilter = document.getElementById('categoryFilter');
+
+    // App state
+    let myLat = null, myLng = null;
+    let map, markersLayer;
+
+    // Init Leaflet
+    function initMap(){
+      map = L.map('map').setView([20.5937,78.9629], 13); // centered on India roughly
+      L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',{maxZoom:19,attribution:'© OpenStreetMap'}).addTo(map);
+      markersLayer = L.layerGroup().addTo(map);
+    }
+
+    function setStatus(msg){status.textContent = msg}
+
+    async function requestLocation(){
+      if (!navigator.geolocation) { setStatus('Geolocation not supported in your browser.'); return; }
+      setStatus('Requesting location...');
+      navigator.geolocation.getCurrentPosition(pos=>{
+        myLat = pos.coords.latitude; myLng = pos.coords.longitude;
+        setStatus(`Location set: ${myLat.toFixed(5)}, ${myLng.toFixed(5)}`);
+        map.setView([myLat,myLng],15);
+        L.circle([myLat,myLng],{radius:1000,color:'#0b74de',fill:false}).addTo(map);
+        loadNearbyItems();
+      },err=>{setStatus('Location permission denied or error.');console.error(err)} ,{enableHighAccuracy:true});
+    }
+
+    async function loadNearbyItems(){
+      if (myLat===null) { setStatus('Allow location first.'); return; }
+      setStatus('Loading nearby items...');
+      markersLayer.clearLayers(); itemsList.innerHTML='';
+      const postsRef = dbRef(db, 'posts');
+      onValue(postsRef, snapshot=>{
+        const data = snapshot.val() || {};
+        const arr = Object.entries(data).map(([id,p])=>({id,...p}));
+        const now = Date.now();
+        // filter expired
+        const live = arr.filter(p=>!p.expiresAt || p.expiresAt > now);
+        // compute distance and filter within 1 km
+        const withDist = live.map(p=>{p.distance = haversine(myLat,myLng,p.lat,p.lng); return p}).filter(p=>p.distance<=1);
+        // category filter
+        const cat = categoryFilter.value;
+        const filtered = cat==='all'? withDist : withDist.filter(p=>p.category===cat);
+        // sort by distance
+        filtered.sort((a,b)=>a.distance-b.distance);
+
+        // render
+        if(filtered.length===0) itemsList.innerHTML='<div class="small card">No items within 1 km.</div>';
+        filtered.forEach(p=>{
+          // marker
+          const m = L.marker([p.lat,p.lng]).addTo(markersLayer).bindPopup(`<strong>${escapeHtml(p.title)}</strong><br/>${escapeHtml(p.price||'')}`);
+          // list item
+          const div = document.createElement('div'); div.className='item card';
+          const img = document.createElement('img'); img.src = p.photoUrl || 'https://via.placeholder.com/120x120?text=No+Image';
+          const meta = document.createElement('div'); meta.className='meta';
+          meta.innerHTML = `<strong>${escapeHtml(p.title)}</strong><div class="small">${escapeHtml(p.description||'')}</div><div class="small">Price: ${escapeHtml(p.price||'—')}</div><div class="small">Distance: ${p.distance.toFixed(2)} km</div><div style="margin-top:6px"><a class="small" href="https://wa.me/${encodeURIComponent(p.contact||'')}?text=${encodeURIComponent('Hi, I am interested in your item: '+(p.title||''))}" target="_blank">Chat on WhatsApp</a> &nbsp; <a class="small" href="tel:${encodeURIComponent(p.contact||'')}">Call</a></div>`;
+          div.appendChild(img); div.appendChild(meta); itemsList.appendChild(div);
+        });
+      },{onlyOnce:false});
+    }
+
+    // escape HTML helper
+    function escapeHtml(s){ if(!s) return ''; return s.replaceAll('&','&amp;').replaceAll('<','&lt;').replaceAll('>','&gt;'); }
+
+    // Submit new post
+    sellForm.addEventListener('submit', async (e)=>{
+      e.preventDefault();
+      if (myLat===null){ alert('Allow location first so your post is geo-tagged.'); return; }
+      const title = document.getElementById('title').value.trim();
+      const description = document.getElementById('description').value.trim();
+      const price = document.getElementById('price').value.trim();
+      const category = document.getElementById('category').value;
+      const sellerName = document.getElementById('sellerName').value.trim();
+      const contact = document.getElementById('contact').value.trim();
+      const photoInput = document.getElementById('photo');
+
+      if (!title){ alert('Please enter item title.'); return; }
+
+      setStatus('Uploading...');
+
+      // create post object first (without photo)
+      const postsRef = dbRef(db, 'posts');
+      const newPostRef = push(postsRef);
+      const id = newPostRef.key;
+      const expiresAt = Date.now() + 7*24*60*60*1000; // 7 days
+
+      const postObj = {
+        title, description, price, category, sellerName, contact, lat: myLat, lng: myLng, createdAt: Date.now(), expiresAt
+      };
+
+      await set(newPostRef, postObj);
+
+      // if photo add to storage
+      if(photoInput.files && photoInput.files[0]){
+        try{
+          const file = photoInput.files[0];
+          const ext = file.name.split('.').pop();
+          const storagePath = `posts/${id}.${ext}`;
+          const sRef = storageRef(storage, storagePath);
+          await uploadBytes(sRef, file);
+          const url = await getDownloadURL(sRef);
+          // update post with photoUrl
+          await set(dbRef(db, `posts/${id}/photoUrl`), url);
+        }catch(err){console.error('Upload error',err);}
+      }
+
+      setStatus('Posted!');
+      sellForm.reset();
+      loadNearbyItems();
+    });
+
+    // My posts view (shows posts created from this browser by comparing lat/lng roughly)
+    document.getElementById('myPostsBtn').addEventListener('click', async ()=>{
+      if(myLat===null){ alert('Allow location first.'); return; }
+      const postsRef = dbRef(db, 'posts');
+      onValue(postsRef, snapshot=>{
+        const data = snapshot.val()||{}; const arr = Object.entries(data).map(([id,p])=>({id,...p}));
+        const my = arr.filter(p=>haversine(myLat,myLng,p.lat,p.lng)<=0.05); // within 50m considered mine
+        if(my.length===0) return alert('No posts found from this device/location.');
+        // render a simple list and allow delete
+        let html = 'Your posts:\n\n';
+        my.forEach(p=>{ html += `${p.title} — ${p.price||''} — id: ${p.id}\n`; });
+        alert(html + '\nTo remove a post, open the DB console or use admin tools. (This demo does not auto-authenticate you)');
+      },{onlyOnce:true});
+    });
+
+    // small admin cleanup function (unprotected demo) - only run if you set ADMIN_TOKEN in localStorage
+    async function cleanupExpired(){
+      const ADMIN_TOKEN = localStorage.getItem('ADMIN_TOKEN');
+      if(!ADMIN_TOKEN) return; // skip
+      const postsRef = dbRef(db, 'posts');
+      onValue(postsRef, async snapshot=>{
+        const data = snapshot.val()||{};
+        const now = Date.now();
+        for(const [id,p] of Object.entries(data)){
+          if(p.expiresAt && p.expiresAt < now){
+            try{ await remove(dbRef(db, `posts/${id}`));
+              // try deleting storage file if photoUrl present
+              if(p.photoUrl){ try{ const path = new URL(p.photoUrl).pathname; /* not reliable to map to storage ref */ }catch(e){} }
+            }catch(e){console.error('cleanup err',e)}
+          }
+        }
+      },{onlyOnce:true});
+    }
+
+    // helpers
+    document.getElementById('refreshBtn').addEventListener('click', ()=>{ loadNearbyItems(); });
+    locBtn.addEventListener('click', ()=>{ requestLocation(); });
+    categoryFilter.addEventListener('change', ()=>{ loadNearbyItems(); });
+
+    // init
+    window.addEventListener('load', ()=>{
+      // create map script tag for Leaflet
+      const leaf = document.createElement('script'); leaf.src='https://unpkg.com/leaflet@1.9.4/dist/leaflet.js'; leaf.onload=()=>{ initMap(); }; document.body.appendChild(leaf);
+      setStatus('Ready. Click Allow Location to begin.');
+      cleanupExpired();
+    });
+
+  </script>
+</body>
+</html>
